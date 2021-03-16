@@ -1,0 +1,402 @@
+---
+title: "Caso Pŕactico Final"
+output:
+  html_document: default
+  html_notebook: default
+  pdf_document: default
+---
+We will use the credit approval dataset available at https://archive.ics.uci.edu/ml/datasets/Credit+Approval. The data can also be loaded from the folder under the filename "crx.data". Information about the dataset can be found at https://archive.ics.uci.edu/ml/machine-learning-databases/credit-screening/crx.names y in the following:
+
+      1. Title: Credit Approval
+
+      2. Sources: 
+          (confidential)
+          Submitted by quinlan@cs.su.oz.au
+      
+      3.  Past Usage:
+      
+          See Quinlan,
+          * "Simplifying decision trees", Int J Man-Machine Studies 27,
+            Dec 1987, pp. 221-234.
+          * "C4.5: Programs for Machine Learning", Morgan Kaufmann, Oct 1992
+        
+      4.  Relevant Information:
+      
+          This file concerns credit card applications.  All attribute names
+          and values have been changed to meaningless symbols to protect
+          confidentiality of the data.
+        
+          This dataset is interesting because there is a good mix of
+          attributes -- continuous, nominal with small numbers of
+          values, and nominal with larger numbers of values.  There
+          are also a few missing values.
+        
+      5.  Number of Instances: 690
+      
+      6.  Number of Attributes: 15 + class attribute
+      
+      7.  Attribute Information:
+      
+          A1:	b, a.
+          A2:	continuous.
+          A3:	continuous.
+          A4:	u, y, l, t.
+          A5:	g, p, gg.
+          A6:	c, d, cc, i, j, k, m, r, q, w, x, e, aa, ff.
+          A7:	v, h, bb, j, n, z, dd, ff, o.
+          A8:	continuous.
+          A9:	t, f.
+          A10:	t, f.
+          A11:	continuous.
+          A12:	t, f.
+          A13:	g, p, s.
+          A14:	continuous.
+          A15:	continuous.
+          A16: +,-         (class attribute)
+      
+      8.  Missing Attribute Values:
+          37 cases (5%) have one or more missing values.  The missing
+          values from particular attributes are:
+      
+          A1:  12
+          A2:  12
+          A4:   6
+          A5:   6
+          A6:   9
+          A7:   9
+          A14: 13
+      
+      9.  Class Distribution
+        
+          +: 307 (44.5%)
+          -: 383 (55.5%)
+      
+## Tasks
+
+1. Load data. Do an inspection of the distribution of the variables and present them visually. Make pertinent observations. What variables are the best for separating the data?
+2. Prepare the dataset and impute missing values using the `missForest` library.
+3. Split the dataset into train and test, taking the first 590 rows as train, and the last 100 as test.
+4. Train a logistic regression model with Ridge and Lasso selecting the best model based on **AUC**. Give the metrics for the test data.
+5. Show the log odds for the predictive variables.
+6. If for every true positive we win 100 euros, and for every false positive we lose 20 euros, how much money will we make using the confusion matrix for the model with the best **AUC**? 
+
+
+**Task 1**
+
+Load libraries
+```{r}
+library(dplyr)
+library(readr)
+library(ggplot2)
+library(missForest)
+library(corrplot)
+library(caret)
+library(glmnet)
+```
+
+Import data
+```{r}
+df <- read_csv("crx.data", col_names = FALSE, col_types = "fddffffdlldlfddc")
+head(df)
+```
+```{r}
+summary(df[, 1:10])
+summary(df[, 11:16])
+```
+Here we see that some factorised columns (X1, X4, X5, X6 and X7) have "?" as a value. The question mark is not one of the possible levels as described above in the attribute information. These will need to be converted to NA's and then imputed. In addition, we find that in column X2, 12 value's are described as NA as well as in X14, 13 values are found to be missing, confirming information provided above in the Missing Attribute Values section.
+```{r}
+sum(df$X6 == "?") # Confirm that column X6 contains missing values in the form of "?"
+```
+
+
+Column X16 is of a binary format, and so we can recode this column to reflect this. This is the attribute against which we want to later run 
+a logistical regression, therefore recoding now means we won't have issues down the line.
+```{r}
+df$X16 <- recode(df$X16, "+" = TRUE, "-" = FALSE)
+```
+
+
+
+Plot distrubtion of all variables
+```{r}
+distributions <- function(dataframe) {
+  for (col in 1:ncol(dataframe)) {  
+    if (class(dataframe[[col]]) == "factor") {
+      plot <- ggplot(dataframe) +
+        geom_bar(aes(x = dataframe[[col]],
+                     fill = dataframe[[col]])) +
+        labs(title = paste("Barchart of ", colnames(dataframe[col])),
+             x = colnames(df[col]),
+             y = "Count",
+             fill = "Group")
+    } else if (class(dataframe[[col]]) == "logical") {
+      plot <- ggplot(dataframe) +
+        geom_bar(aes(x = dataframe[[col]],
+                     fill = dataframe[[col]])) +
+        labs(title = paste("Barchart of ", colnames(dataframe[col])),
+             x = colnames(df[col]),
+             y = "Count") +
+        theme(legend.title = element_blank())
+    } else {
+      # Histogram plotted for numeric variables
+      plot <- ggplot(dataframe) +
+        geom_histogram(aes(x = dataframe[[col]], fill = "red")) +
+        labs(title = paste("Histogram of", colnames(dataframe[col])),
+             x = colnames(df[col]),
+             y = "Count") +
+        theme(legend.position = "none")
+    }
+  plot <- print(plot)
+  }
+}
+
+distributions(df)
+
+```
+Observations for each variable:
+
+**X1** The majority are in group b. Group a has slightly less than half that of group b
+**X2** Data is skewed to the right
+**X3** Again data skewed to the right
+**X4** Group u is by far the most populated whereas group l is almost empty
+**X5** Majority in group g with group gg containing very few
+**X6** Somewhat evenly distributed given the number of different categories. However group c contains the most, and group r the fewest
+**X7** Group v contains the majority, group j through n contain very few
+**X8** Most of the data close to zero and skewed to the right
+**X9** Relatively evenly distributed between TRUE and FALSE, with TRUE being the most populous
+**X10** Similar to X9, but FALSE slightly more populous
+**X11** Data heavily skewed to the right
+**X12** Quite even distribution with FALSE being a little more populous
+**X13** Group g contains the majority, group s contain very few, and group p contain even fewer
+**X14** Data skewed to the right
+**X15** Data heavily skewed to the right
+**X16** FALSE count is around 60 higher than that of TRUE
+
+
+plot each variable against class attribute (X16)
+```{r}
+plot_variables_vs_target <- function(dataframe, target_column) {
+  for (col in 1:ncol(dataframe)) {
+    if (colnames(dataframe[col]) == "X16") {
+      next
+    } else {
+      if (class(dataframe[[col]]) == "factor") {
+        plot <- ggplot(dataframe, aes(x = dataframe[[col]],
+                                      fill = as.factor(target_column))) +
+          geom_bar(position = "dodge") +
+          labs(title = paste("Barchart of ", colnames(dataframe[col])),
+               x = colnames(df[col]),
+               y = "Count",
+               fill = "Target Variable")
+      } else if (class(dataframe[[col]]) == "logical") {
+        plot <- ggplot(dataframe, aes(x = dataframe[[col]],
+                                      fill = as.factor(target_column))) +
+          geom_bar(position = "dodge") +
+          labs(title = paste("Barchart of ", colnames(dataframe[col])),
+               x = colnames(df[col]),
+               y = "Count",
+               fill = "Target Variable")
+      } else {
+        plot <- ggplot(df, aes(x = dataframe[[col]], fill = as.factor(target_column))) +
+            geom_boxplot(position = position_dodge(1)) +
+            coord_flip() +
+            labs(title = paste(colnames(dataframe[col]), "~ Target variable"),
+                 x = colnames(dataframe[col]),
+                 fill = "Target Variable") +
+          theme(axis.text.x = element_blank(),
+                axis.line.x = element_line(),
+                axis.ticks.length.x = unit(3, "mm"),
+                axis.title.y = element_blank())
+      }
+    }
+  plot <- print(plot)
+  }
+}
+
+plot_variables_vs_target(df, df$X16)
+```
+Observations of the relationship between each variable and X16:
+
+**X1** Reasonably evenly distributed between TRUE and FASLE for each group. Although group b leans more towards FALSE than TRUE
+**X2** IQR of TRUE bar is greater, although the difference in distribution between TRUE and FALSE is quite similar
+**X3** Somewhat similar to X2's relationship with X16, although the difference between TRUE and FALSE is greater
+**X4** For each group, distribution is similar. However, FALSE makes up the majority of group y with about 75% of the total of group y
+**X5** Evenly distributed between TRUE and FALSE for each group, other than group p where FALSE makes up the majority
+**X6** Some groups are more populated with FALSE values that TRUE. Few group have more TRUE values than FALSE
+**X7** Two groups (v and ff) have considerably more FALSE values than TRUE. Group h however has more TRue values than FALSE
+**X8** TRUE has a wider distribution and X8 values are slightly higher
+**X9** This variable seems like it will have good predictive power as eahc group is heavily towards FALSE or TRUE
+**X10** Very similar to X9 and may provide good predictive power
+**X11** Seems like the difference may well be significant and therefore provide some predictive power to the model
+**X12** Distribution between TRUE and FALSE is very similar whether X12 is TRUE or FALSE
+**X13** Generally leans towards the target variable being FALSE for each group of X13
+**X14** Somewhat similar distributions, but FALSE has a slightly tighter distribution, but more outliers
+**X15** Not too much differnece between TRUE and FALSE, so may provide little to no predictive power
+
+Convert all "?" values to NA
+```{r}
+df <- df %>%
+        mutate(X1 = na_if(X1, "?"),
+               X4 = na_if(X4, "?"),
+               X5 = na_if(X5, "?"),
+               X6 = na_if(X6, "?"),
+               X7 = na_if(X7, "?"))
+
+summary(df)
+```
+
+ **Task 2**
+ 
+Impute missing values with missForest
+```{r}
+imp_df <- missForest(as.data.frame(df))
+```
+```{r}
+imp_data <- imp_df$ximp
+print(paste(sum(is.na(df)), "missing values in original dataframe"))
+print(paste(sum(is.na(imp_df)), "missing values after imputation"))
+```
+
+Normality test for numeric variables
+```{r}
+numeric_columns <- imp_data %>%
+                      dplyr::select(X2, X3, X8, X11, X14, X15)
+
+sapply(numeric_columns, function(x) round(shapiro.test(x)$p.value, 4))
+```
+There are no numeric columns with a significant (> 0.05) p-value suggesting that they are not normally distributed
+
+Correlation matrix for numeric variables
+```{r}
+corrplot(cor(numeric_columns), method = "number", type = "lower")
+```
+Generally weak correlations between numeric variables. Strongest correlations are between X8 and X2 at 0.4, and between X11 and X8 at 0.32. X15 appears not to correlate well with any variable.
+
+independency test for all variables against target variable
+```{r, warning = FALSE}
+sapply(imp_data[, -16], function(x) round(chisq.test(x, imp_data$X16)$p.value, 4))
+```
+These results suggest that columns X1, X2, X3, and X12 are independent of column X16, whereas the rest show a significant relationship with column X16
+
+```{r}
+colnames(numeric_columns)
+```
+
+scale numeric columns
+```{r}
+imp_data$X2 <- scale(imp_data$X2)
+imp_data$X3 <- scale(imp_data$X3)
+imp_data$X8 <- scale(imp_data$X8)
+imp_data$X11 <- scale(imp_data$X11)
+imp_data$X14 <- scale(imp_data$X14)
+imp_data$X15 <- scale(imp_data$X15)
+```
+
+**Task 3**
+
+Create matrices of data
+```{r}
+X <- data.matrix(subset(imp_data, select = -16))
+Y <- as.double(as.matrix(imp_data[ , 16]))
+```
+```{r}
+head(X)
+```
+Separate Train (first 590 rows) and Test (final 100 rows) data
+```{r}
+X_train <- X[1:590, ]
+Y_train <- Y[1:590]
+X_test <- X[591:nrow(X), ]
+Y_test <- Y[591:length(Y)]
+```
+
+**Task 4 - Ridge Regression Model**
+
+Create Ridge model setting alpha to 0
+```{r}
+set.seed(123)
+cv.ridge <- cv.glmnet(X_train, Y_train, family = "binomial", parellel = TRUE, standardize = TRUE, type.measure = "auc", alpha = 0)
+```
+```{r}
+plot(cv.ridge)
+( lambda.ridge <- cv.ridge$lambda.min )
+```
+```{r}
+y_pred_ridge <- as.numeric(predict.glmnet(cv.ridge$glmnet.fit, newx = X_test, s = lambda.ridge)>0.5)
+```
+```{r}
+( cm_ridge <- confusionMatrix(as.factor(y_pred_ridge), as.factor(Y_test), mode = "everything", positive = "1") )
+```
+
+**Task 5- Ridge Regression Model**
+
+Calculate log odds for each variable with respect to target variable
+```{r}
+coefs.ridge <- as.matrix(coef(cv.ridge, s = lambda.ridge))
+for (coef in 2:nrow(coefs.ridge)) {
+  log_odd <- exp(coefs.ridge[coef])
+  prob_increase <- round(log_odd *100 - 100, 2)
+  if (prob_increase == 0) {
+    print(paste("column", colnames(imp_data[coef-1], "has no effect on the probabilty that the class attribute (column X16) value will be TRUE or FALSE")))
+  } else if (prob_increase > 0) {
+    print(paste("For every unit increase of column", colnames(imp_data[coef-1]), ", the probability that the class atribute value (column X16) will be TRUE increases by", prob_increase, "%."))
+  } else {
+    print(paste("For every unit increase of column", colnames(imp_data[coef-1]), ", the probability that the class atribute value (column X16) will be TRUE decreases by", abs(prob_increase), "%."))
+  }
+}
+```
+
+**Task 4 - Lasso Regression Model**
+
+Create Lasso model setting alpha to 1
+```{r}
+cv.lasso <- cv.glmnet(X_train, Y_train, family = "binomial", parellel = TRUE, standardize = TRUE, type.measure = "auc", alpha = 1)
+
+plot(cv.lasso)
+( lambda.lasso <- cv.lasso$lambda.min )
+```
+```{r}
+y_pred_lasso <- as.numeric(predict.glmnet(cv.lasso$glmnet.fit, newx = X_test, s = lambda.lasso)>0.5)
+head(y_pred_lasso)
+```
+```{r}
+( cm_lasso <-confusionMatrix(as.factor(y_pred_lasso), as.factor(Y_test), mode = "everything", positive = "1") )
+```
+
+**Task 5 - Lasso Regression Model**
+
+Calculate log odd for each variable with respect to target variable
+```{r}
+coefs.lasso <- as.matrix(coef(cv.lasso, s = lambda.lasso))
+for (coef in 2:nrow(coefs.lasso)) {
+  log_odd <- exp(coefs.lasso[coef])
+  prob_increase <- round(log_odd *100 - 100, 2)
+  if (prob_increase == 0) {
+    print(paste("Column", colnames(imp_data[coef-1]), "has no effect on the probability that the class attribute value (column X16) will be TRUE or FALSE."))
+  } else if (prob_increase > 0) {
+    print(paste("For every unit increase of column", colnames(imp_data[coef-1]), ", the probability that the class atribute value (column X16) will be TRUE increases by", prob_increase, "%."))
+  } else {
+    print(paste("For every unit increase of column", colnames(imp_data[coef-1]), ", the probability that the class atribute value (column X16) will be TRUE decreases by", abs(prob_increase), "%."))
+  }
+}
+```
+AUC values for each regression model
+```{r}
+max(cv.ridge$cvm)
+max(cv.lasso$cvm)
+```
+Here we can see that the lasso model has a slightly higher mean cross-validated error. In this case, as AUC was selected as the measure, this cvm value is the AUC. Therefore, the lasso model is slightly better. However, this provides no additional benefit over the ridge model in practice as shown by identical confusion matrices.
+
+**Task 6**
+
+Calculate loss/gain
+```{r}
+cm_lasso$table
+
+# 100 for true positive = 6
+# -20 for false positive = 0
+
+money <- (100 * cm_lasso$table[2,2]) - (20 * cm_lasso$table[2,1])
+print(paste("This model will have won a total of", money, "Euros"))
+```
+
